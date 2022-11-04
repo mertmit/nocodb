@@ -8,6 +8,7 @@ export default class SyncSource {
   title?: string;
   type?: string;
   details?: any;
+  enabled?: boolean;
   deleted?: boolean;
   order?: number;
   project_id?: string;
@@ -103,6 +104,7 @@ export default class SyncSource {
       'title',
       'type',
       'details',
+      'enabled',
       'deleted',
       'order',
       'project_id',

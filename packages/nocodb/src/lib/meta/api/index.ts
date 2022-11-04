@@ -42,15 +42,14 @@ import {
   publicMetaApis,
 } from './publicApis';
 import { Tele } from 'nc-help';
-import { Server, Socket } from 'socket.io';
+import { Server } from 'socket.io';
 import passport from 'passport';
 
 import crypto from 'crypto';
 import swaggerApis from './swagger/swaggerApis';
 import importApis from './sync/importApis';
 import syncSourceApis from './sync/syncSourceApis';
-
-const clients: { [id: string]: Socket } = {};
+import NocoJobs from '../../jobs/NocoJobs';
 
 export default function (router: Router, server) {
   initStrategies(router);
@@ -102,6 +101,9 @@ export default function (router: Router, server) {
       credentials: true,
     },
   });
+
+  const nocoJobs = NocoJobs.getInstance(io);
+
   io.use(function (socket, next) {
     passport.authenticate(
       'jwt',
@@ -116,7 +118,6 @@ export default function (router: Router, server) {
       }
     )(socket.handshake, {}, next);
   }).on('connection', (socket) => {
-    clients[socket.id] = socket;
     const id = getHash(
       (process.env.NC_SERVER_UUID || Tele.id) +
         (socket?.handshake as any)?.user?.id
@@ -128,9 +129,17 @@ export default function (router: Router, server) {
     socket.on('event', (args) => {
       Tele.event({ ...args, id });
     });
+    socket.on('subscribe', (room) => {
+      if(nocoJobs.isRunning(room)) {
+        socket.emit('job', true);
+        const jb = nocoJobs.getJob(room);
+        socket.join(room);
+        socket.emit('progress', jb.last_message);
+      }
+    });
   });
 
-  importApis(router, clients);
+  importApis(router);
 }
 
 function getHash(str) {

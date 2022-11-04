@@ -1,7 +1,6 @@
-import FetchAT from './fetchAT';
+import FetchAT from './helpers/fetchAT';
 import { UITypes } from 'nocodb-sdk';
 import { Tele } from 'nc-help';
-// import * as sMap from './syncMap';
 
 import { Api } from 'nocodb-sdk';
 
@@ -12,9 +11,11 @@ import hash from 'object-hash';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import tinycolor from 'tinycolor2';
-import { importData, importLTARData } from './readAndProcessData';
+import { importData, importLTARData } from './helpers/readAndProcessData';
 
-import EntityMap from './EntityMap';
+import EntityMap from './helpers/EntityMap';
+import { AirtableSyncConfig } from './config'
+import { parentPort } from 'worker_threads';
 
 dayjs.extend(utc);
 
@@ -65,10 +66,7 @@ const selectColors = {
   grayDarker: '#444',
 };
 
-export default async (
-  syncDB: AirtableSyncConfig,
-  progress: (data: { msg?: string; level?: any }) => void
-) => {
+async function job(config: AirtableSyncConfig): Promise<void> {
   const sMapEM = new EntityMap('aTblId', 'ncId', 'ncName', 'ncParent');
   await sMapEM.init();
 
@@ -481,7 +479,7 @@ export default async (
     for (let i = 0; i < tblSchema.length; ++i) {
       const table: any = {};
 
-      if (syncDB.options.syncViews) {
+      if (config.options.syncViews) {
         rtc.view.total += tblSchema[i].views.reduce(
           (acc, cur) =>
             ['grid', 'form', 'gallery'].includes(cur.type) ? ++acc : acc,
@@ -1432,7 +1430,7 @@ export default async (
           break;
 
         case UITypes.Attachment:
-          if (!syncDB.options.syncAttachment) rec[key] = null;
+          if (!config.options.syncAttachment) rec[key] = null;
           else {
             let tempArr = [];
 
@@ -1657,7 +1655,7 @@ export default async (
       const gridViews = aTblSchema[idx].views.filter((x) => x.type === 'grid');
 
       let viewCnt = idx;
-      if (syncDB.options.syncViews)
+      if (config.options.syncViews)
         viewCnt = rtc.view.grid + rtc.view.gallery + rtc.view.form;
       rtc.view.grid += gridViews.length;
 
@@ -2144,33 +2142,33 @@ export default async (
   try {
     logBasic('SDK initialized');
     api = new Api({
-      baseURL: syncDB.baseURL,
+      baseURL: config.baseURL,
       headers: {
-        'xc-auth': syncDB.authToken,
+        'xc-auth': config.authToken,
       },
     });
 
     logDetailed('Project initialization started');
     // delete project if already exists
-    if (debugMode) await init(syncDB);
+    if (debugMode) await init(config);
 
     logDetailed('Project initialized');
 
     logBasic('Retrieving Airtable schema');
     // read schema file
-    const schema = await getAirtableSchema(syncDB);
+    const schema = await getAirtableSchema(config);
     const aTblSchema = schema.tableSchemas;
     logDetailed('Project schema extraction completed');
 
-    if (!syncDB.projectId) {
-      if (!syncDB.projectName)
+    if (!config.projectId) {
+      if (!config.projectName)
         throw new Error('Project name or id not provided');
       // create empty project
-      await nocoCreateProject(syncDB.projectName);
+      await nocoCreateProject(config.projectName);
       logDetailed('Project created');
     } else {
-      await nocoGetProject(syncDB.projectId);
-      syncDB.projectName = ncCreatedProjectSchema?.title;
+      await nocoGetProject(config.projectId);
+      config.projectName = ncCreatedProjectSchema?.title;
       logDetailed('Getting existing project meta');
     }
 
@@ -2184,20 +2182,20 @@ export default async (
     await nocoCreateLinkToAnotherRecord(aTblSchema);
     logDetailed('Migrating LTAR columns completed');
 
-    if (syncDB.options.syncLookup) {
+    if (config.options.syncLookup) {
       logDetailed(`Configuring Lookup`);
       // add look-ups
       await nocoCreateLookups(aTblSchema);
       logDetailed('Migrating Lookup columns completed');
     }
 
-    if (syncDB.options.syncRollup) {
+    if (config.options.syncRollup) {
       logDetailed('Configuring Rollup');
       // add roll-ups
       await nocoCreateRollup(aTblSchema);
       logDetailed('Migrating Rollup columns completed');
 
-      if (syncDB.options.syncLookup) {
+      if (config.options.syncLookup) {
         logDetailed('Migrating Lookup form Rollup columns');
         // lookups for rollup
         await nocoLookupForRollup();
@@ -2219,12 +2217,12 @@ export default async (
 
     logBasic('Syncing views');
     // configure views
-    await nocoConfigureGridView(syncDB, aTblSchema);
-    await nocoConfigureFormView(syncDB, aTblSchema);
-    await nocoConfigureGalleryView(syncDB, aTblSchema);
+    await nocoConfigureGridView(config, aTblSchema);
+    await nocoConfigureFormView(config, aTblSchema);
+    await nocoConfigureGalleryView(config, aTblSchema);
     logDetailed('Syncing views completed');
 
-    if (syncDB.options.syncData) {
+    if (config.options.syncData) {
       try {
         // await nc_DumpTableSchema();
         const _perfStart = recordPerfStart();
@@ -2245,16 +2243,16 @@ export default async (
             continue;
 
           recordCnt = 0;
-          // await nocoReadData(syncDB, ncTbl);
+          // await nocoReadData(config, ncTbl);
 
           recordsMap[ncTbl.id] = await importData({
-            projectName: syncDB.projectName,
+            projectName: config.projectName,
             table: ncTbl,
             base,
             api,
             logBasic,
             nocoBaseDataProcessing_v2,
-            sDB: syncDB,
+            sDB: config,
             logDetailed,
           });
           rtc.data.records += await recordsMap[ncTbl.id].getCount();
@@ -2267,7 +2265,7 @@ export default async (
           const ncTbl = await api.dbTable.read(ncTblList.list[i].id);
           rtc.data.nestedLinks += await importLTARData({
             table: ncTbl,
-            projectName: syncDB.projectName,
+            projectName: config.projectName,
             api,
             base,
             fields: null, //Object.values(tblLinkGroup).flat(),
@@ -2286,14 +2284,14 @@ export default async (
           //   logBasic(`:: ${pTitle}`);
           //   for (const [, record] of Object.entries(v)) {
           //     const tbl = ncTblList.list.find(a => a.title === pTitle);
-          //     await nocoLinkProcessing(syncDB.projectName, tbl, record, 0);
+          //     await nocoLinkProcessing(config.projectName, tbl, record, 0);
           //     // insertJobs.push(
-          //     //   nocoLinkProcessing(syncDB.projectName, tbl, record, 0)
+          //     //   nocoLinkProcessing(config.projectName, tbl, record, 0)
           //     // );
           //   }
           // }
           // await Promise.all(insertJobs);
-          // await nocoLinkProcessing(syncDB.projectName, 0, 0, 0);
+          // await nocoLinkProcessing(config.projectName, 0, 0, 0);
         } else {
           // // create link groups (table: link fields)
           //           // const tblLinkGroup = {};
@@ -2308,7 +2306,7 @@ export default async (
           //           //
           //           // await importLTARData({
           //           //   table: ncTbl,
-          //           //   projectName: syncDB.projectName,
+          //           //   projectName: config.projectName,
           //           //   api,
           //           //   base,
           //           //   fields: Object.values(tblLinkGroup).flat(),
@@ -2323,7 +2321,7 @@ export default async (
           //
           //   recordCnt = 0;
           //   await nocoReadDataSelected(
-          //     syncDB.projectName,
+          //     config.projectName,
           //     ncTbl,
           //     async (projName, table, record, _field) => {
           //       await nocoLinkProcessing(projName, table, record, _field);
@@ -2334,7 +2332,7 @@ export default async (
         }
       } catch (error) {
         logDetailed(
-          `There was an error while migrating data! Please make sure your API key (${syncDB.apiKey}) is correct.`
+          `There was an error while migrating data! Please make sure your API key (${config.apiKey}) is correct.`
         );
         logDetailed(`Error: ${error}`);
       }
@@ -2352,9 +2350,9 @@ export default async (
     }
     throw e;
   }
-};
+}
 
-export function getUniqueNameGenerator(defaultName = 'name') {
+function getUniqueNameGenerator(defaultName = 'name') {
   const namesRef = {};
 
   return (initName: string = defaultName): string => {
@@ -2368,20 +2366,12 @@ export function getUniqueNameGenerator(defaultName = 'name') {
   };
 }
 
-export interface AirtableSyncConfig {
-  id: string;
-  baseURL: string;
-  authToken: string;
-  projectName?: string;
-  projectId?: string;
-  apiKey: string;
-  shareId: string;
-  options: {
-    syncViews: boolean;
-    syncData: boolean;
-    syncRollup: boolean;
-    syncLookup: boolean;
-    syncFormula: boolean;
-    syncAttachment: boolean;
-  };
+parentPort.once('message', (data) => {
+  job(data);
+});
+
+function progress(data) {
+  parentPort.postMessage(data);
 }
+
+export { AirtableSyncConfig };

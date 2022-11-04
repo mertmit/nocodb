@@ -3,7 +3,7 @@
     "skipLibCheck": true,
     "composite": true,
     "target": "es2017",
-    "outDir": "build/main",
+    "outDir": "build",
     "rootDir": "src",
     "moduleResolution": "node",
     "module": "commonjs",
@@ -57,15 +57,11 @@
   },
   "include": [
     "src/**/*.ts",
-//    "src/lib/xgene/migrations/*.js",
     "src/**/*.json"
   ],
   "exclude": [
     "node_modules/**",
-    "node_modules",
-    "../../../xc-lib-private/**",
-    "../../../xc-lib-private",
-    "src/lib/jobs/jobs/**"
+    "node_modules"
   ],
   "compileOnSave": false
 }

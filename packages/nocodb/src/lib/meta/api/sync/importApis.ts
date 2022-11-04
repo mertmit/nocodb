@@ -2,68 +2,22 @@ import { Request, Router } from 'express';
 // import { Queue } from 'bullmq';
 // import axios from 'axios';
 import catchError from '../../helpers/catchError';
-import { Socket } from 'socket.io';
 import NocoJobs from '../../../jobs/NocoJobs';
-import job, { AirtableSyncConfig } from './helpers/job';
 import SyncSource from '../../../models/SyncSource';
+import { AirtableSyncConfig } from '../../../jobs/jobs';
 import Noco from '../../../Noco';
 import { genJwt } from '../userApi/helpers';
+import { NcError } from '../../helpers/catchError';
+
 const AIRTABLE_IMPORT_JOB = 'AIRTABLE_IMPORT_JOB';
-const AIRTABLE_PROGRESS_JOB = 'AIRTABLE_PROGRESS_JOB';
 
-enum SyncStatus {
-  PROGRESS = 'PROGRESS',
-  COMPLETED = 'COMPLETED',
-  FAILED = 'FAILED',
-}
-
-export default (router: Router, clients: { [id: string]: Socket }) => {
-  // add importer job handler and progress notification job handler
-  NocoJobs.jobsMgr.addJobWorker(AIRTABLE_IMPORT_JOB, job);
-  NocoJobs.jobsMgr.addJobWorker(
-    AIRTABLE_PROGRESS_JOB,
-    ({ payload, progress }) => {
-      clients?.[payload?.id]?.emit('progress', {
-        msg: progress?.msg,
-        level: progress?.level,
-        status: progress?.status,
-      });
-    }
-  );
-
-  NocoJobs.jobsMgr.addProgressCbk(AIRTABLE_IMPORT_JOB, (payload, progress) => {
-    NocoJobs.jobsMgr.add(AIRTABLE_PROGRESS_JOB, {
-      payload,
-      progress: {
-        msg: progress?.msg,
-        level: progress?.level,
-        status: progress?.status,
-      },
-    });
-  });
-  NocoJobs.jobsMgr.addSuccessCbk(AIRTABLE_IMPORT_JOB, (payload) => {
-    NocoJobs.jobsMgr.add(AIRTABLE_PROGRESS_JOB, {
-      payload,
-      progress: {
-        msg: 'Complete!',
-        status: SyncStatus.COMPLETED,
-      },
-    });
-  });
-  NocoJobs.jobsMgr.addFailureCbk(AIRTABLE_IMPORT_JOB, (payload, error: any) => {
-    NocoJobs.jobsMgr.add(AIRTABLE_PROGRESS_JOB, {
-      payload,
-      progress: {
-        msg: error?.message || 'Failed due to some internal error',
-        status: SyncStatus.FAILED,
-      },
-    });
-  });
+export default (router: Router) => {
+  const nocoJobs = NocoJobs.getInstance();
 
   router.post(
     '/api/v1/db/meta/import/airtable',
     catchError((req, res) => {
-      NocoJobs.jobsMgr.add(AIRTABLE_IMPORT_JOB, {
+      nocoJobs.jobsMgr.add(AIRTABLE_IMPORT_JOB, {
         id: req.query.id,
         ...req.body,
       });
@@ -73,6 +27,9 @@ export default (router: Router, clients: { [id: string]: Socket }) => {
   router.post(
     '/api/v1/db/meta/syncs/:syncId/trigger',
     catchError(async (req: Request, res) => {
+      if (nocoJobs.isRunning(req.params.syncId)) {
+        NcError.badRequest('Sync is already triggered!');
+      }
       const syncSource = await SyncSource.get(req.params.syncId);
 
       const user = await syncSource.getUser();
@@ -89,13 +46,27 @@ export default (router: Router, clients: { [id: string]: Socket }) => {
         baseURL = `http://localhost:${process.env.PORT || 8080}`;
       }
 
-      NocoJobs.jobsMgr.add<AirtableSyncConfig>(AIRTABLE_IMPORT_JOB, {
-        id: req.query.id,
+      nocoJobs.run(req.params.syncId, './src/lib/jobs/jobs/at-compiled/build/index.js', {
+        id: req.params.syncId,
         ...(syncSource?.details || {}),
         projectId: syncSource.project_id,
         authToken: token,
         baseURL,
-      });
+      } as AirtableSyncConfig);
+
+      res.json({});
+    })
+  );
+
+  router.post(
+    '/api/v1/db/meta/syncs/:syncId/abort',
+    catchError(async (req: Request, res) => {
+      if (!nocoJobs.isRunning(req.params.syncId)) {
+        NcError.badRequest('Sync is not triggered!');
+      }
+      
+      await nocoJobs.stop(req.params.syncId);
+      
       res.json({});
     })
   );
